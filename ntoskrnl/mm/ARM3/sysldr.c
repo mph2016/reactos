@@ -991,7 +991,7 @@ MmUnloadSystemImage(IN PVOID ImageHandle)
 
     /* Release the system lock and return */
 Done:
-    KeReleaseMutant(&MmSystemLoadLock, 1, FALSE, FALSE);
+    KeReleaseMutant(&MmSystemLoadLock, MUTANT_INCREMENT, FALSE, FALSE);
     KeLeaveCriticalRegion();
     return STATUS_SUCCESS;
 }
@@ -1466,8 +1466,14 @@ MiFindInitializationCode(OUT PVOID *StartVa,
     /* Assume failure */
     *StartVa = NULL;
 
-    /* Enter a critical region while we loop the list */
+    /* Acquire the necessary locks while we loop the list */
     KeEnterCriticalRegion();
+    KeWaitForSingleObject(&MmSystemLoadLock,
+                          WrVirtualMemory,
+                          KernelMode,
+                          FALSE,
+                          NULL);
+    ExAcquireResourceExclusiveLite(&PsLoadedModuleResource, TRUE);
 
     /* Loop all loaded modules */
     NextEntry = PsLoadedModuleList.Flink;
@@ -1615,7 +1621,9 @@ MiFindInitializationCode(OUT PVOID *StartVa,
         NextEntry = NextEntry->Flink;
     }
 
-    /* Leave the critical region and return */
+    /* Release the locks and return */
+    ExReleaseResourceLite(&PsLoadedModuleResource);
+    KeReleaseMutant(&MmSystemLoadLock, MUTANT_INCREMENT, FALSE, FALSE);
     KeLeaveCriticalRegion();
 }
 
@@ -2409,7 +2417,14 @@ MiSetSystemCodeProtection(
         TempPte = *PointerPte;
 
         /* Make sure it's valid */
-        ASSERT(TempPte.u.Hard.Valid == 1);
+        if (TempPte.u.Hard.Valid != 1)
+        {
+            DPRINT1("CORE-16449: FirstPte=%p, LastPte=%p, Protection=%lx\n", FirstPte, LastPte, Protection);
+            DPRINT1("CORE-16449: PointerPte=%p, TempPte=%lx\n", PointerPte, TempPte.u.Long);
+            DPRINT1("CORE-16449: Please issue the 'mod' and 'bt' (KDBG) or 'lm' and 'kp' (WinDbg) commands. Then report this in Jira.\n");
+            ASSERT(TempPte.u.Hard.Valid == 1);
+            break;
+        }
 
         /* Update the protection */
         TempPte.u.Hard.Write = BooleanFlagOn(Protection, IMAGE_SCN_MEM_WRITE);
@@ -2957,7 +2972,7 @@ LoaderScan:
     else if (!Section)
     {
         /* It wasn't loaded, and we didn't have a previous attempt */
-        KeReleaseMutant(&MmSystemLoadLock, 1, FALSE, FALSE);
+        KeReleaseMutant(&MmSystemLoadLock, MUTANT_INCREMENT, FALSE, FALSE);
         KeLeaveCriticalRegion();
         LockOwned = FALSE;
 
@@ -3309,7 +3324,7 @@ Quickie:
     if (LockOwned)
     {
         /* Release the lock */
-        KeReleaseMutant(&MmSystemLoadLock, 1, FALSE, FALSE);
+        KeReleaseMutant(&MmSystemLoadLock, MUTANT_INCREMENT, FALSE, FALSE);
         KeLeaveCriticalRegion();
         LockOwned = FALSE;
     }

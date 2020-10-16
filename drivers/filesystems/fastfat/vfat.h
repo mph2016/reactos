@@ -1189,7 +1189,7 @@ VfatRead(
 
 NTSTATUS
 VfatWrite(
-    PVFAT_IRP_CONTEXT IrpContext);
+    PVFAT_IRP_CONTEXT *pIrpContext);
 
 NTSTATUS
 NextCluster(
@@ -1220,6 +1220,10 @@ vfatSplitPathName(
 BOOLEAN
 vfatIsLongIllegal(
     WCHAR c);
+
+BOOLEAN
+IsDotOrDotDot(
+    PCUNICODE_STRING Name);
 
 /* volume.c */
 

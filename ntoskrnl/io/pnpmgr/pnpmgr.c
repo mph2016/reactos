@@ -18,6 +18,7 @@
 ERESOURCE PpRegistryDeviceResource;
 KGUARDED_MUTEX PpDeviceReferenceTableLock;
 RTL_AVL_TABLE PpDeviceReferenceTable;
+BOOLEAN PnPBootDriversLoaded;
 
 extern ULONG ExpInitializationPhase;
 
@@ -562,7 +563,11 @@ IopSynchronousCall(IN PDEVICE_OBJECT DeviceObject,
 
     /* Allocate an IRP */
     Irp = IoAllocateIrp(TopDeviceObject->StackSize, FALSE);
-    if (!Irp) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!Irp)
+    {
+        ObDereferenceObject(TopDeviceObject);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
 
     /* Initialize to failure */
     Irp->IoStatus.Status = IoStatusBlock.Status = STATUS_NOT_SUPPORTED;
@@ -1060,7 +1065,15 @@ IopEnumerateDetectedDevices(
    UNICODE_STRING HardwareIdKeyboard = RTL_CONSTANT_STRING(L"*PNP0303\0");
    static ULONG DeviceIndexKeyboard = 0;
    const UNICODE_STRING IdentifierMouse = RTL_CONSTANT_STRING(L"PointerController");
+   /* FIXME: IopEnumerateDetectedDevices() should be rewritten.
+    * The PnP identifiers can either be hardcoded or parsed from a LegacyXlate
+    * sections of driver INF files.
+    */
+#if defined(SARCH_PC98)
+   UNICODE_STRING HardwareIdMouse = RTL_CONSTANT_STRING(L"*nEC1F00\0");
+#else
    UNICODE_STRING HardwareIdMouse = RTL_CONSTANT_STRING(L"*PNP0F13\0");
+#endif
    static ULONG DeviceIndexMouse = 0;
    const UNICODE_STRING IdentifierParallel = RTL_CONSTANT_STRING(L"ParallelController");
    UNICODE_STRING HardwareIdParallel = RTL_CONSTANT_STRING(L"*PNP0400\0");
@@ -2474,13 +2487,21 @@ IoInvalidateDeviceRelations(
     IN PDEVICE_OBJECT DeviceObject,
     IN DEVICE_RELATION_TYPE Type)
 {
-    DEVICE_ACTION_DATA ActionData;
+    if (!IopIsValidPhysicalDeviceObject(DeviceObject))
+    {
+        KeBugCheckEx(PNP_DETECTED_FATAL_ERROR, 0x2, (ULONG_PTR)DeviceObject, 0, 0);
+    }
 
-    ActionData.DeviceObject = DeviceObject;
-    ActionData.Action = DeviceActionInvalidateDeviceRelations;
-    ActionData.InvalidateDeviceRelations.Type = Type;
-
-    IopQueueDeviceAction(&ActionData);
+    switch (Type)
+    {
+        case BusRelations:
+            /* Enumerate the device */
+            PiQueueDeviceAction(DeviceObject, PiActionEnumDeviceTree, NULL, NULL);
+            break;
+        default:
+            /* Everything else is not implemented */
+            break;
+    }
 }
 
 /*
@@ -2494,11 +2515,16 @@ IoSynchronousInvalidateDeviceRelations(
 {
     PAGED_CODE();
 
+    if (!IopIsValidPhysicalDeviceObject(DeviceObject))
+    {
+        KeBugCheckEx(PNP_DETECTED_FATAL_ERROR, 0x2, (ULONG_PTR)DeviceObject, 0, 0);
+    }
+
     switch (Type)
     {
         case BusRelations:
             /* Enumerate the device */
-            return IopEnumerateDevice(DeviceObject);
+            return PiPerformSyncDeviceAction(DeviceObject, PiActionEnumDeviceTree);
         case PowerRelations:
              /* Not handled yet */
              return STATUS_NOT_IMPLEMENTED;
